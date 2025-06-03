@@ -15,13 +15,14 @@
 #include "lib/rain_sensor.h"
 #include "lib/buzzer.h"
 
+// Configuração da Internet
 #define WIFI_SSID "SeuSSID"
 #define WIFI_PASSWORD "SuaSenha"
 #define MQTT_SERVER "endereco_ip_do_broker" // Ex: "192.168.1.100"
 #define MQTT_USERNAME "seu_usuario_mqtt"
 #define MQTT_PASSWORD "sua_senha_mqtt"
 
-// Pin configurations
+// Configuração dos pinos
 #define I2C_OLED_PORT i2c1
 #define I2C_OLED_SDA 15
 #define I2C_OLED_SCL 14
@@ -45,7 +46,7 @@
 #define ALARM_CRITICAL_INTERVAL_MS 250
 #define RAIN_ALARM_INTERVAL_MS 600
 
-// Device instances
+// Instâncias de dispositivos
 ssd1306_t oled;
 bh1750_t light_sensor;
 float temperature = 0;
@@ -57,6 +58,7 @@ rain_sensor_t rain_sensor;
 absolute_time_t last_alarm_time;
 absolute_time_t last_rain_alarm_time;
 
+// Configuração do MQTT
 #ifndef MQTT_SERVER
 #error "MQTT_SERVER must be defined"
 #endif
@@ -107,21 +109,21 @@ typedef struct {
 #define MQTT_DEVICE_NAME "pico"
 #define MQTT_UNIQUE_TOPIC 0
 
-// Function prototypes
-static void pub_request_cb(__unused void *arg, err_t err);
-static const char *full_topic(MQTT_CLIENT_DATA_T *state, const char *name);
-static void sub_request_cb(void *arg, err_t err);
-static void unsub_request_cb(void *arg, err_t err);
-static void sub_unsub_topics(MQTT_CLIENT_DATA_T* state, bool sub);
-static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t flags);
-static void mqtt_incoming_publish_cb(void *arg, const char *topic, u32_t tot_len);
-static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection_status_t status);
-static void start_client(MQTT_CLIENT_DATA_T *state);
-static void dns_found(const char *hostname, const ip_addr_t *ipaddr, void *arg);
-static bool check_critical_conditions(void);
-void init_all_devices();
-void update_display(float lux, float temp, float hum, bool rain);
-void publish_sensor_data(MQTT_CLIENT_DATA_T *state, float temp, float hum, float lux, bool rain);
+// Protótipos de funções
+static void pub_request_cb(__unused void *arg, err_t err); // Callback para publicação
+static const char *full_topic(MQTT_CLIENT_DATA_T *state, const char *name); // Gera o tópico completo com o ID do cliente
+static void sub_request_cb(void *arg, err_t err); // Callback para assinatura
+static void unsub_request_cb(void *arg, err_t err); // Callback para desinscrição
+static void sub_unsub_topics(MQTT_CLIENT_DATA_T* state, bool sub); // Inscreve ou cancela inscrição em tópicos
+static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t flags); // Callback para dados recebidos
+static void mqtt_incoming_publish_cb(void *arg, const char *topic, u32_t tot_len); // Callback para publicação recebida
+static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection_status_t status); // Callback de conexão MQTT
+static void start_client(MQTT_CLIENT_DATA_T *state); // Inicia o cliente MQTT
+static void dns_found(const char *hostname, const ip_addr_t *ipaddr, void *arg); // Callback de resolução DNS
+static bool check_critical_conditions(void); // Verifica condições críticas dos sensores
+void init_all_devices(); // Inicializa todos os dispositivos
+void update_display(float lux, float temp, float hum, bool rain); // Atualiza o display OLED
+void publish_sensor_data(MQTT_CLIENT_DATA_T *state, float temp, float hum, float lux, bool rain); // Publica dados dos sensores
 
 int main() {
     sleep_ms(1000);
@@ -191,7 +193,7 @@ int main() {
     last_rain_alarm_time = nil_time;
 
     while (true) {
-        // Read BH1750 light sensor
+        // Lê o sensor BH1750
         if (absolute_time_diff_us(last_bh1750_read, get_absolute_time()) > 2000000) {
             bh1750_start_measurement(&light_sensor);
             sleep_ms(180);
@@ -204,7 +206,7 @@ int main() {
             last_bh1750_read = get_absolute_time();
         }
 
-        // Read DHT22 sensor
+        // Lê o sensor DHT22
         if (absolute_time_diff_us(last_dht22_read, get_absolute_time()) > 3000000) {
             if (read_dht22(DHT22_PIN, &temperature, &humidity)) {
                 printf("Temperature: %.1fC, Humidity: %.1f%%\n", temperature, humidity);
@@ -214,14 +216,14 @@ int main() {
             last_dht22_read = get_absolute_time();
         }
 
-        // Read rain sensor
+        // Lê o sensor de chuva
         if (absolute_time_diff_us(last_rain_sensor_read, get_absolute_time()) > 2000000) {
             raining = rain_sensor_read_digital(&rain_sensor);
             printf("Rain status: %s\n", raining ? "Raining" : "Not raining");
             last_rain_sensor_read = get_absolute_time();
         }
 
-        // Check critical conditions and trigger alarms
+        // Checa condições críticas e toca alarmes
         if (check_critical_conditions()) {
             absolute_time_t now = get_absolute_time();
             if (is_nil_time(last_alarm_time) || 
@@ -235,7 +237,7 @@ int main() {
             gpio_put(RED_LED, false);
         }
 
-        // Rain alarm
+        // Alarme de chuva
         if (raining) {
             absolute_time_t now = get_absolute_time();
             if (is_nil_time(last_rain_alarm_time) || 
@@ -250,17 +252,17 @@ int main() {
             gpio_put(BLUE_LED, false);
         }
 
-        // Normal condition LED
+        // Condição Normal do LED
         if (check_critical_conditions() || raining) {
             gpio_put(GREEN_LED, false);
         } else {
             gpio_put(GREEN_LED, true);
         }
 
-        // Update display
+        // Atualiza o display OLED
         update_display(luminosity, temperature, humidity, raining);
 
-        // Publish sensor data every 10 seconds if connected
+        // Publica dados no MQTT a cada 10 segundos
         if (state.connect_done && mqtt_client_is_connected(state.mqtt_client_inst)) {
             if (absolute_time_diff_us(last_mqtt_publish, get_absolute_time()) > 10000000) {
                 publish_sensor_data(&state, temperature, humidity, luminosity, raining);
@@ -365,35 +367,37 @@ static bool check_critical_conditions(void) {
 }
 
 void init_all_devices() {
-    // Initialize I2C for OLED
+    // Inicia o I2C para OLED
     i2c_init(I2C_OLED_PORT, 400000);
     gpio_set_function(I2C_OLED_SDA, GPIO_FUNC_I2C);
     gpio_set_function(I2C_OLED_SCL, GPIO_FUNC_I2C);
     gpio_pull_up(I2C_OLED_SDA);
     gpio_pull_up(I2C_OLED_SCL);
 
-    // Initialize I2C for BH1750
+    // Inicia o I2C para BH1750
     i2c_init(I2C_BH1750_PORT, 400000);
     gpio_set_function(I2C_BH1750_SDA, GPIO_FUNC_I2C);
     gpio_set_function(I2C_BH1750_SCL, GPIO_FUNC_I2C);
     gpio_pull_up(I2C_BH1750_SDA);
     gpio_pull_up(I2C_BH1750_SCL);
 
-    // Initialize OLED
+    // Inicia o Display OLED
     ssd1306_init(&oled, 128, 64, false, 0x3C, I2C_OLED_PORT);
     ssd1306_config(&oled);
     ssd1306_fill(&oled, false);
     ssd1306_send_data(&oled);
 
-    // Initialize BH1750
+    // Inicia o sensor BH1750
     bh1750_init(&light_sensor, I2C_BH1750_PORT, BH1750_ADDR_LOW, BH1750_CONT_HIGH_RES_MODE);
 
-    // Initialize Rain Sensor
+    // Inicia o sensor de Chuva
     rain_sensor_init_digital(&rain_sensor, RAIN_SENSOR_PIN);
 
+    // Inicia os buzzers
     init_buzzer_pwm(BUZZER_A);
     init_buzzer_pwm(BUZZER_B);
 
+    // Inicia os LEDs
     gpio_init(GREEN_LED);
     gpio_init(BLUE_LED);
     gpio_init(RED_LED);
